@@ -1,16 +1,8 @@
 #!/usr/bin/python
-#
-# Send joint values to UR5 using messages
-#
-
 from trajectory_msgs.msg import JointTrajectory
 from std_msgs.msg import Header
 from trajectory_msgs.msg import JointTrajectoryPoint
 import rospy
-import copy
-# import pynput
-# from pynput import keyboard
-#!/usr/bin/python
 import numpy as np 
 import math 
 import cmath
@@ -23,6 +15,183 @@ from math import sqrt as sqrt
 from math import pi as pi
 from numpy import linalg
 from itertools import chain
+
+###############################################################[UR5-Manipulator]####################################################################
+"""This script aims to manipulate the UR5 using a position input list and it applies Inverse Kinmatics to the the input list in order to find the 
+    coresponding joints values and then it operates by publishing the joint commands to the '/trajectory_controller/command' in order to move the 
+    simulated arm. The script runs in two different modes:
+    
+    (1) Control mode:
+        In this mode the the program waits for a list of the desired position in the form of <x,y,z>. 
+        The points are entered one by one. After entering each point, The inverse kinmatics is applied to the entered point
+        to calculate the joint values and appends all the possible solutions (same desired position but with different joints configurations) 
+        to the Waypointlist.
+
+    (2) Operational Mode:
+        In this mode we can traverese the Waypoint list and publish joints values to the topic '/trajectory_controller/command'
+        traveresing the list is done by using (n) for the next waypoint or (p) for previuos waypoint. 
+
+    Changing between the modes is done by entering (t) to toggle between the modes. 
+"""
+
+
+
+
+
+
+####################################################################[init]#############################################################################
+""" In this part the JointTrajectory() message is declared globally to be used prepareMsg() to prepare the message that should be sent to the 
+    the '/trajectory_controller/command'. The Waypoint list is initilized to have the home position with joint values [0.0, -1.57, 0.0, 0.0, 0.0, 0.0].
+    This list is modified by operating in the Control mode where it appends the other waypoints to this list. 
+"""
+global traj
+traj = JointTrajectory()
+traj.header = Header()
+global wp
+wp=0;
+waypoints=[
+    [0.0, -1.57, 0.0, 0.0, 0.0, 0.0],
+]
+
+
+
+
+
+###############################################################[ROS-Joint-Values-Publisher]####################################################################
+""" the declared JointTrajectory() message is used here at first to preapre the message by initilizing the message fields. The prepared message fields 
+    include the list of the joint values which is set the Waypoint[Wp] where the Wp is used to index the waypoins (incremented by entering (n) for next waypoint
+    , or decremented by entering (p) for the previous waypoint).
+"""
+
+
+def prepareMsg():
+    global wp
+    global waypoints
+
+    traj.header.stamp = rospy.Time.now()
+    pts = JointTrajectoryPoint()
+    pts.time_from_start = rospy.Duration(1.0)
+
+    
+    pts.positions = waypoints[wp];
+    
+       
+
+    # Set the points to the trajectory
+    traj.points = []
+    traj.points.append(pts)
+
+    return traj
+
+
+
+###############################################################[UR5-Manipulator]###########################################################################
+""" The main loop of the script starts by initlizing the ROS node send_joints and creating a publisher to the topic '/trajectory_controller/command'
+    it completes the fields for the of the 'traj' message, where the remaining fields is set during the message prepartion in the prepareMsg().
+    The script starts in the Control Mode. where to options are availble. The first is enter a position list in the form of <x,y,z> (i.e. 0.2 0.1 0.2) 
+    sperated by spaces. To start moving the robot enter (t) to toggle the mode to the Operational mode. Where (n) and (p) are used to move between next 
+    and previous the waypoints. NOTE: The Waypoints added to the list include all the possible configuration for the robotic arm.
+
+"""
+
+
+
+def main():
+    global traj
+    global wp
+    global waypoints
+    rospy.init_node('send_joints')
+    pub = rospy.Publisher('/trajectory_controller/command',
+                          JointTrajectory,
+                          queue_size=1)
+
+    # Joint names for UR5
+    traj.joint_names = ['shoulder_pan_joint', 'shoulder_lift_joint','elbow_joint', 'wrist_1_joint', 'wrist_2_joint','wrist_3_joint']
+    rate = rospy.Rate(10)
+    manual =True;  #True: Control Mode, False: Operational mode 
+
+
+
+
+
+    while not rospy.is_shutdown():
+        traj = prepareMsg() #prepare the Ros message
+        pub.publish(traj)   #publish the Ros message
+
+        if(manual):
+            command=raw_input("[Manual]: Enter (t)toggle, or (p) to input a pose list:")
+            if(command=='t'):  #toggle the mode
+                manual= not manual
+            else:
+                
+                while(True):
+                    input_string = raw_input('Enter end-effector pose seperated by spaces : ') #input in the for of x y z
+                    print("\n")
+                    user_list = input_string.split()
+
+                    if(user_list[0]=='t'):  #check if a toggle request made
+                        manual=not manual
+                        wp=0
+                        break
+                    else:                   #take the pose list and apply inverse kinmatics to it
+
+
+
+                        for i in range(len(user_list)):
+                            # convert each item to int type
+                            user_list[i] = float(user_list[i])
+                        
+                        #the dp is the desired position, the last column is for the pos, the others are for the arm configuration 
+                        dp= [[ 3.06161700e-17, 8.66025404e-01, -5.00000000e-01, 0.0],
+                            [-1.00000000e+00, 0.00000000e+00, -5.55111512e-17, 0.0],
+                            [-5.55111512e-17, 5.00000000e-01, 8.66025404e-01, 0.0],
+                            [ 0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 0.0]]
+
+                        #append the user pose
+                        dp[0][3]=user_list[0]
+                        dp[1][3]=user_list[1]
+                        dp[2][3]=user_list[2]
+
+                        np.matrix(dp)
+                        
+
+
+                        #apply the inverse kinmatic to the the list, then appends all the eight possible solutions
+                        for i in range(0,8):
+                            joints=invKine(dp)
+                            jlist = list(chain.from_iterable(joints[:,i].tolist()))
+                            print(jlist)
+                            waypoints.append(jlist)
+
+                       
+
+                    #prepare and publish the ROS message
+                    traj = prepareMsg()
+                    pub.publish(traj)
+
+        else:       #Operational mode
+
+            command=raw_input("[waypoints-mode]: Enter (t)toggle, (n) for next waypoint, (p) for previous waypoint:")
+            if(command=='t'): #to toggle the mode
+                manual= not manual
+            elif (command=='n'): #to next waypoint
+                if (wp<len(waypoints)-1):
+                    wp+=1
+            elif (command=='p'): #to previuos waypoint
+                if(wp>0):
+                    wp-=1
+
+
+
+
+
+
+###############################################################[Inverse-Kinamtics]####################################################################
+"""The Implementation of the inverse kinmatics for the UR5 arm, This Implementation is done by @mc-capolei with slight modifications to match the UR5.
+    please refer to the following PDF file for both the Forward and Inverse kinamtics for the UR5:
+    (https://smartech.gatech.edu/bitstream/handle/1853/50782/ur_kin_tech_report_1.pdf)
+    refere to the original code by @mc-capolei (https://github.com/mc-capolei/python-Universal-robot-kinematics).
+"""
 
 global mat
 mat=np.matrix
@@ -135,143 +304,6 @@ def AH( n,th,c  ):
   return A_i
 
 
-
-# Create the topic message
-global traj
-traj = JointTrajectory()
-traj.header = Header()
-global wp
-wp=0;
-waypoints=[
-    [0.0, -1.57, 0.0, 0.0, 0.0, 0.0],
-    [-0.19834809 ,-2.71798325 , 1.1418184 , -2.62115693 ,-1.47211123 ,-2.96925616],
-    [-0.19834809 ,-1.62762785 ,-1.1418184 , -1.4278754  ,-1.47211123 ,-2.96925616]
-]
-def prepareMsg():
-    global wp
-    global waypoints
-
-    traj.header.stamp = rospy.Time.now()
-    pts = JointTrajectoryPoint()
-    pts.time_from_start = rospy.Duration(1.0)
-
-    
-    pts.positions = waypoints[wp];
-    
-       
-
-    # Set the points to the trajectory
-    traj.points = []
-    traj.points.append(pts)
-
-    return traj
-
-
-def main():
-    global traj
-    global wp
-    global waypoints
-    rospy.init_node('send_joints')
-    pub = rospy.Publisher('/trajectory_controller/command',
-                          JointTrajectory,
-                          queue_size=1)
-
-
-    # Joint names for UR5
-    traj.joint_names = ['shoulder_pan_joint', 'shoulder_lift_joint','elbow_joint', 'wrist_1_joint', 'wrist_2_joint','wrist_3_joint']
-
-    rate = rospy.Rate(10)
-
-    manual =True;
-
-    while not rospy.is_shutdown():
-        traj = prepareMsg()
-        pub.publish(traj)
-
-        if(manual):
-            command=raw_input("[Manual]: Enter (t)toggle, or (p) to input a pose list:")
-            if(command=='t'):
-                manual= not manual
-            else:
-                
-                while(True):
-                    input_string = raw_input('Enter end-effector pose seperated by spaces : ')
-                    print("\n")
-                    user_list = input_string.split()
-
-                    if(user_list[0]=='t'):
-                        manual=not manual
-                        wp=0
-                        break
-                    else:
-                        for i in range(len(user_list)):
-                            # convert each item to int type
-                            user_list[i] = float(user_list[i])
-                        
-                        dp= [[ 3.06161700e-17, 8.66025404e-01, -5.00000000e-01, 0.4470],
-                            [-1.00000000e+00, 0.00000000e+00, -5.55111512e-17, -0.2235],
-                            [-5.55111512e-17, 5.00000000e-01, 8.66025404e-01, 0.8661],
-                            [ 0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 0.0008900]]
-                        dp[0][3]=user_list[0]
-                        dp[1][3]=user_list[1]
-                        dp[2][3]=user_list[2]
-
-                        np.matrix(dp)
-
-                        for i in range(0,1):
-                            joints=invKine(dp)
-                            jlist = list(chain.from_iterable(joints[:,i].tolist()))
-                            print(jlist)
-                            waypoints.append(jlist)
-
-                       
-
-                    
-                    traj = prepareMsg()
-                    pub.publish(traj)
-
-        else:
-            # for way in waypoints:
-            #     for j in way:
-            #         print(j)
-            #     print("\n")
-
-            command=raw_input("[waypoints-mode]: Enter (t)toggle, (n) for next waypoint, (p) for previous waypoint:")
-            if(command=='t'):
-                manual= not manual
-            elif (command=='n'):
-                if (wp<len(waypoints)-1):
-                    wp+=1
-            elif (command=='p'):
-                if(wp>0):
-                    wp-=1
-
-
-
-
-            
-        
-
-        
-
-    
-# def on_press(key):
-#     global wp
-#     if key == keyboard.Key.up:
-#         wp+=1;
-    # elif key == keyboard.Key.down:
-    #     lin_vel = lin_vel-0.1
-    # elif key == keyboard.Key.left:
-    #     ang_vel = ang_vel+0.05
-    # elif key == keyboard.Key.right:
-    #     ang_vel = ang_vel-0.05
-    # elif key == keyboard.Key.space:  
-    #     lin_vel = 0
-    #     ang_vel = 0  
-    # elif key == keyboard.Key.tab:
-    #     print('mode switch')
-    #     calibrate= not calibrate
-  
 
 
 
